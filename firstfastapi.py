@@ -1,102 +1,77 @@
-from fastapi import FastAPI, Query
-from pydantic import BaseModel, Field, field_validator
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from typing import List
+from pymongo import MongoClient
+from bson import ObjectId
 
-app = FastAPI(
-    title="My FastAPI App",
-    description="This is Description",
-    openapi_url="/api/openapi.json",
-    version="1.0.0",
-    contact={"name": "Mayar", "email": "mayar@example.com"},
-    license_info={"name": "MIT", "url": "https://opensource.org/licenses/MIT"})
+# MongoDB setup
+client = MongoClient("mongodb://localhost:27017/")
+db = client["mydatabase"]
+users_collection = db["users"]
 
-@app.get("/")
-def home():
-    return "Hello from home page!"
+# FastAPI app
+app = FastAPI(title="User CRUD API",
+                description="API to create, read, update, and delete users",
+                version="1.0.0")
 
-@app.get("/hello/{name}")
-def hello(name: str):
-    return f"Hello, {name}!"
+# Pydantic models
+class User(BaseModel):
+    name: str = Field(..., description="Full name of the user")
+    email: str = Field(..., description="User email address")
+    age: int = Field(..., gt=0, description="User age")
 
-@app.get("/hello1/{name}/{age}/{height}/{is_student}")
-def hello1(name: str, age: int, height: float, is_student: bool):
+class UserResponse(User):
+    id: str
+
+# Helper function to convert ObjectId to str
+def user_helper(user) -> dict:
     return {
-        "name": name,
-        "age": age,
-        "height": height,
-        "is_student": is_student
-    }
-@app.get("/hello2/{name}")
-def hello2(name: str,
-           age: int = Query(..., description="Your age"),
-           height: float = Query(..., description="Your height"),
-           is_student: bool = Query(..., description="Are you a student?")
-):
-    return {
-        "name": name,
-        "age": age,
-        "height": height,
-        "is_student": is_student
+        "id": str(user["_id"]),
+        "name": user["name"],
+        "email": user["email"],
+        "age": user["age"]
     }
 
-class Book(BaseModel):
-    title: str = Field(..., description="Title of the book", max_length=100,json_schema_extra={"example": "Harry Potter"})
-    pages: int = Field(..., gt=0, description="Number of pages, must be positive")
+# ----------------- CRUD Routes -----------------
 
+# Create user
+@app.post("/users", response_model=UserResponse)
+def create_user(user: User):
+    result = users_collection.insert_one(user.dict())
+    new_user = users_collection.find_one({"_id": result.inserted_id})
+    return user_helper(new_user)
 
-@app.post("/add_book")
-def add_book(book: Book):
-    return book
+# Read all users
+@app.get("/users", response_model=List[UserResponse])
+def get_users():
+    users = [user_helper(u) for u in users_collection.find()]
+    return users
 
+# Read single user
+@app.get("/users/{user_id}", response_model=UserResponse)
+def get_user(user_id: str):
+    user = users_collection.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user_helper(user)
 
-#response model
-class UserResponse(BaseModel):
-    id: int
-    name: str
-    email: str
+# Update user
+@app.put("/users/{user_id}", response_model=UserResponse)
+def update_user(user_id: str, user: User):
+    result = users_collection.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": user.dict()}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    updated_user = users_collection.find_one({"_id": ObjectId(user_id)})
+    return user_helper(updated_user)
 
-@app.get("/user", response_model=UserResponse)
-def get_user():
-    return {"id": 1, "name": "Mayar", "email": "mayar@gmail.com", "extra_field": "not shown"}
-
-
-#exclude
-class UserResponseExclude(BaseModel):
-    id: int
-    name: str
-    email: str
-
-@app.get("/userexclude", response_model=UserResponseExclude, response_model_exclude=("email",))
-def get_user():
-    return {"id": 1, "name": "Mayar", "email": "mayar@gmail.com"}
-
-
-
-##post with response
-class BookRequest(BaseModel):
-    title: str = Field(..., description="Title of the book", json_schema_extra={"example": "Harry Potter"})
-    pages: int = Field(..., description="Number of pages, must be positive")
-
-# response for success
-class BookResponse(BaseModel):
-    id: int = Field(..., description="Unique book ID")
-    title: str = Field(..., description="Title of the book",json_schema_extra={"example": "Harry Potter"})
-    pages: int = Field(..., description="Number of pages", json_schema_extra={"example": 350})
-
-# Response for error
-class ErrorResponse(BaseModel):
-    detail: str = Field(..., json_schema_extra={"example": "invalid input"})
-
-@app.post(
-    "/Enhanced books",
-    response_model=BookResponse,
-    status_code=201,
-    responses={
-        400: {
-            "model": ErrorResponse,
-            "description": "Invalid input data"
-        }
-    }
-)
-def create_book(book: BookRequest):
-    return {"id": 1, "title": book.title, "pages": book.pages}
+# Delete user
+@app.delete("/users/{user_id}")
+def delete_user(user_id: str):
+    result = users_collection.delete_one({"_id": ObjectId(user_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"detail": "User deleted successfully"}
 
